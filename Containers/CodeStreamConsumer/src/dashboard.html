@@ -1,0 +1,155 @@
+<!doctype html>
+<!-- ADDED: simple live dashboard (not part of the original assignment code).
+     It reads /timers/data and /status every 5 seconds and shows the main numbers and four charts. -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clone Detector Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; margin: 20px; color: #222; background: #fff; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  .links { margin-bottom: 16px; font-size: 14px; }
+  .numbers { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+  .box { border: 1px solid #ccc; padding: 10px 14px; min-width: 150px; }
+  .box .label { font-size: 13px; color: #666; }
+  .box .value { font-size: 22px; font-weight: bold; margin-top: 4px; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .chart { border: 1px solid #ccc; padding: 10px; }
+  .chart div { height: 250px; }
+  table { border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+  td, th { border: 1px solid #ccc; padding: 4px 10px; text-align: left; }
+  td.num { text-align: right; }
+  .small { font-size: 13px; color: #666; }
+  @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>Clone Detector Dashboard</h1>
+<div class="links"><a href="/">Clones</a> | <a href="/timers">Timers</a> | <span class="small" id="updated">loading...</span></div>
+
+<div class="numbers">
+  <div class="box"><div class="label">Files processed</div><div class="value" id="files">-</div></div>
+  <div class="box"><div class="label">Clones found</div><div class="value" id="clones">-</div></div>
+  <div class="box"><div class="label">Avg time (last 100 files)</div><div class="value" id="avg">-</div></div>
+  <div class="box"><div class="label">Time per line (last 100)</div><div class="value" id="perLine">-</div></div>
+  <div class="box"><div class="label">Files in last minute</div><div class="value" id="lastMinute">-</div></div>
+  <div class="box"><div class="label">Heap memory</div><div class="value" id="memory">-</div></div>
+</div>
+
+<div class="charts">
+  <div class="chart"><h2>Average time per file (groups of 100 files)</h2><div><canvas id="timeChart"></canvas></div></div>
+  <div class="chart"><h2>Time per line (groups of 100 files)</h2><div><canvas id="lineChart"></canvas></div></div>
+  <div class="chart"><h2>Files per minute</h2><div><canvas id="rateChart"></canvas></div></div>
+  <div class="chart"><h2>Heap memory (while this page is open)</h2><div><canvas id="memChart"></canvas></div></div>
+</div>
+
+<h2 style="margin-top:20px">5 slowest files</h2>
+<table>
+  <thead><tr><th>#</th><th>File</th><th>Lines</th><th>Time</th></tr></thead>
+  <tbody id="slowest"></tbody>
+</table>
+
+<script>
+const GROUP = 100;
+const memory = [];
+
+function newChart(id, type, color, yTitle) {
+  return new Chart(document.getElementById(id), {
+    type: type,
+    data: { labels: [], datasets: [{ data: [], backgroundColor: color, borderColor: color, pointRadius: 0 }] },
+    options: {
+      animation: false, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: yTitle } } }
+    }
+  });
+}
+const timeChart = newChart('timeChart', 'bar', '#4C78A8', 'ms');
+const lineChart = newChart('lineChart', 'bar', '#F58518', 'µs per line');
+const rateChart = newChart('rateChart', 'bar', '#54A24B', 'files');
+const memChart  = newChart('memChart',  'line', '#E45756', 'MiB');
+
+function update(chart, labels, values) {
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = values;
+  chart.update();
+}
+
+function show(records, status) {
+  // only corpus files, not A.java and B.java
+  const files = records.filter(r => r.name.includes('/QualitasCorpus/'));
+  const last = files.slice(-GROUP);
+  const sum = (list, key) => list.reduce((a, r) => a + r[key], 0);
+
+  document.getElementById('files').textContent = records.length;
+  document.getElementById('clones').textContent = records.length ? records[records.length - 1].clones : 0;
+  if (last.length > 0) {
+    document.getElementById('avg').textContent = (sum(last, 'total') / last.length / 1000).toFixed(1) + ' ms';
+    document.getElementById('perLine').textContent = Math.round(sum(last, 'total') / sum(last, 'lines')) + ' µs';
+  }
+
+  // groups of 100 files
+  const labels = [], avg = [], perLine = [];
+  for (let i = 0; i + GROUP <= files.length; i += GROUP) {
+    const group = files.slice(i, i + GROUP);
+    labels.push((i + 1) + '-' + (i + GROUP));
+    avg.push(sum(group, 'total') / group.length / 1000);
+    perLine.push(sum(group, 'total') / sum(group, 'lines'));
+  }
+  update(timeChart, labels, avg);
+  update(lineChart, labels, perLine);
+
+  // files per minute, using the time when each file was done
+  const timed = records.filter(r => r.at);
+  if (timed.length > 0) {
+    const start = timed[0].at;
+    const perMinute = [];
+    timed.forEach(r => {
+      const minute = Math.floor((r.at - start) / 60000);
+      perMinute[minute] = (perMinute[minute] || 0) + 1;
+    });
+    const counts = Array.from(perMinute, v => v || 0);
+    update(rateChart, counts.map((_, i) => i + 1), counts);
+    const now = timed[timed.length - 1].at;
+    document.getElementById('lastMinute').textContent = timed.filter(r => r.at > now - 60000).length;
+  }
+
+  // memory
+  if (status) {
+    memory.push({ time: new Date().toLocaleTimeString(), mb: status.heapUsedMB });
+    update(memChart, memory.map(m => m.time), memory.map(m => m.mb));
+    document.getElementById('memory').textContent = status.heapUsedMB.toFixed(0) + ' MiB';
+  }
+
+  // slowest files
+  const slowest = [...files].sort((a, b) => b.total - a.total).slice(0, 5);
+  const tbody = document.getElementById('slowest');
+  tbody.innerHTML = '';
+  slowest.forEach(r => {
+    const row = tbody.insertRow();
+    row.insertCell().textContent = r.index;
+    row.insertCell().textContent = r.name.split('/').pop();
+    const lines = row.insertCell(); lines.textContent = r.lines; lines.className = 'num';
+    const time = row.insertCell(); time.textContent = (r.total / 1000000).toFixed(2) + ' s'; time.className = 'num';
+  });
+
+  document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString() + ' (every 5 s)';
+}
+
+async function refresh() {
+  try {
+    const records = await fetch('/timers/data').then(r => r.json());
+    const status = await fetch('/status').then(r => r.json());
+    show(records, status);
+  } catch (e) {
+    document.getElementById('updated').textContent = 'cannot reach the consumer';
+  }
+  setTimeout(refresh, 5000);
+}
+refresh();
+</script>
+</body>
+</html>

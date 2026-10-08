@@ -27,8 +27,15 @@ app.get('/', viewClones );
 // ADDED: new pages for timing statistics
 //   /timers       - summary table and charts for all files (assignment task 2)
 //   /timers/data  - the raw timing records as JSON (used by the charts and to save the statistics)
+//   /dashboard    - a simple live dashboard (dashboard.html)
+//   /status       - memory usage of this process, used by the dashboard
 app.get('/timers', viewTimers );
 app.get('/timers/data', (req, res) => res.json(timingRecords) );
+app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/dashboard.html') );
+app.get('/status', (req, res) => {
+    let mem = process.memoryUsage();
+    res.json({ heapUsedMB: mem.heapUsed / 1048576, rssMB: mem.rss / 1048576, uptime: process.uptime() });
+});
 
 const server = app.listen(PORT, () => { console.log('Listening for files on port', PORT); });
 
@@ -88,8 +95,8 @@ function listProcessedFilesHTML() {
 function viewClones(req, res, next) {
     let page='<HTML><HEAD><TITLE>CodeStream Clone Detector</TITLE></HEAD>\n';
     page += '<BODY><H1>CodeStream Clone Detector</H1>\n';
-    // CHANGED: added a link to the new /timers page
-    page += '<P>' + getStatistics() + ' <a href="/timers">Detailed timing statistics</a></P>\n';
+    // CHANGED: added links to the new /timers and /dashboard pages
+    page += '<P>' + getStatistics() + ' <a href="/timers">Detailed timing statistics</a> | <a href="/dashboard">Dashboard</a></P>\n';
     page += lastFileTimersHTML() + '\n';
     page += listClonesHTML() + '\n';
     page += listProcessedFilesHTML() + '\n';
@@ -115,6 +122,7 @@ function recordTimers(file) {
         total: Number(timers['total'] / 1000n),   // µs
         match: Number(timers['match'] / 1000n),   // µs
         clones: CloneStorage.getInstance().numberOfClones,
+        at: Date.now(),                           // ADDED (for the dashboard): when the file was done, for files per minute
     });
     return file;
 }
