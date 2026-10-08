@@ -1,8 +1,14 @@
 const emptyLine = /^\s*$/;
 const oneLineComment = /\/\/.*/;
-const oneLineMultiLineComment = /\/\*.*?\*\//; 
-const openMultiLineComment = /\/\*+[^\*\/]*$/;
-const closeMultiLineComment = /^[\*\/]*\*+\//;
+// CHANGED: the three comment regexes below were fixed.
+//   - closeMultiLineComment was /^[\*\/]*\*+\// and only matched "*/" at the very start of a line.
+//     An indented " */" (as in most license headers) never closed the comment, so the whole
+//     file was treated as a comment and produced no chunks at all.
+//   - openMultiLineComment was /\/\*+[^\*\/]*$/ and did not match a comment containing "/" or "*".
+//   - oneLineMultiLineComment now has the g flag, so all /* ... */ on one line are removed, not only the first.
+const oneLineMultiLineComment = /\/\*.*?\*\//g;
+const openMultiLineComment = /\/\*.*$/;
+const closeMultiLineComment = /^.*?\*\//;   // Everything up to the first */, including leading whitespace
 
 const SourceLine = require('./SourceLine');
 const FileStorage = require('./FileStorage');
