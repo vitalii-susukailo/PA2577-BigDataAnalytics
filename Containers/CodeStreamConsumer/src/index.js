@@ -24,6 +24,11 @@ function fileReceiver(req, res, next) {
 }
 
 app.get('/', viewClones );
+// ADDED: new pages for timing statistics
+//   /timers       - summary table and charts for all files (assignment task 2)
+//   /timers/data  - the raw timing records as JSON (used by the charts and to save the statistics)
+app.get('/timers', viewTimers );
+app.get('/timers/data', (req, res) => res.json(timingRecords) );
 
 const server = app.listen(PORT, () => { console.log('Listening for files on port', PORT); });
 
@@ -83,10 +88,99 @@ function listProcessedFilesHTML() {
 function viewClones(req, res, next) {
     let page='<HTML><HEAD><TITLE>CodeStream Clone Detector</TITLE></HEAD>\n';
     page += '<BODY><H1>CodeStream Clone Detector</H1>\n';
-    page += '<P>' + getStatistics() + '</P>\n';
+    // CHANGED: added a link to the new /timers page
+    page += '<P>' + getStatistics() + ' <a href="/timers">Detailed timing statistics</a></P>\n';
     page += lastFileTimersHTML() + '\n';
     page += listClonesHTML() + '\n';
     page += listProcessedFilesHTML() + '\n';
+    page += '</BODY></HTML>';
+    res.send(page);
+}
+
+// ADDED: Timing statistics page (assignment task 2)
+// --------------------
+// recordTimers() saves the timers of every processed file in timingRecords.
+// summarise() calculates averages for a list of records.
+// viewTimers() shows a table for all / last 1000 / last 100 / last 10 files and two charts
+// (time per file and time per line, with a rolling average over 100 files).
+var timingRecords = [];
+
+function recordTimers(file) {
+    let timers = Timer.getTimers(file);
+    let lines = file.contents.split('\n').length;
+    timingRecords.push({
+        index: timingRecords.length + 1,
+        name: file.name,
+        lines: lines,
+        total: Number(timers['total'] / 1000n),   // µs
+        match: Number(timers['match'] / 1000n),   // µs
+        clones: CloneStorage.getInstance().numberOfClones,
+    });
+    return file;
+}
+
+function summarise(records) {
+    if (0 == records.length) return null;
+    let sum = (key) => records.reduce( (acc, r) => acc + r[key], 0 );
+    let lines = sum('lines');
+    return {
+        files: records.length,
+        avgTotal: sum('total') / records.length,
+        avgMatch: sum('match') / records.length,
+        perLine: sum('total') / lines,
+        maxTotal: Math.max(...records.map( r => r.total )),
+    };
+}
+
+function viewTimers(req, res, next) {
+    let windows = [['All files', timingRecords],
+                   ['Last 1000 files', timingRecords.slice(-1000)],
+                   ['Last 100 files', timingRecords.slice(-100)],
+                   ['Last 10 files', timingRecords.slice(-10)]];
+    let fmt = (us) => (us / 1000).toFixed(2) + ' ms';
+
+    let page = '<HTML><HEAD><TITLE>CodeStream Timing Statistics</TITLE>\n';
+    page += '<meta http-equiv="refresh" content="10">\n';
+    page += '<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>\n';
+    page += '<style>body{font-family:sans-serif;margin:2em} table{border-collapse:collapse} td,th{border:1px solid #ccc;padding:4px 10px;text-align:right} .chart{max-width:1100px;height:320px;margin-bottom:2em}</style>\n';
+    page += '</HEAD><BODY><H1>CodeStream Timing Statistics</H1>\n';
+    page += '<P>' + getStatistics() + ' <a href="/">Back to clones</a> (page refreshes every 10 s)</P>\n';
+
+    page += '<table><tr><th>Window</th><th>Files</th><th>Avg total</th><th>Avg match</th><th>Avg per line</th><th>Max total</th></tr>\n';
+    windows.forEach( ([label, records]) => {
+        let s = summarise(records);
+        if (s) {
+            page += '<tr><th>' + label + '</th><td>' + s.files + '</td><td>' + fmt(s.avgTotal) + '</td><td>' + fmt(s.avgMatch)
+                + '</td><td>' + s.perLine.toFixed(1) + ' µs</td><td>' + fmt(s.maxTotal) + '</td></tr>\n';
+        }
+    });
+    page += '</table>\n';
+
+    page += '<h2>Processing time per file</h2><div class="chart"><canvas id="total"></canvas></div>\n';
+    page += '<h2>Processing time per line (normalised)</h2><div class="chart"><canvas id="perLine"></canvas></div>\n';
+    page += `<script>
+fetch('/timers/data').then(r => r.json()).then(records => {
+    // Downsample so the charts stay responsive with many files
+    const step = Math.max(1, Math.ceil(records.length / 2000));
+    const pts = records.filter((r, i) => i % step == 0);
+    records.forEach(r => r.perLine = r.total / r.lines);
+    const rolling = (key, n) => records.map((r, i) => {
+        const w = records.slice(Math.max(0, i - n + 1), i + 1);
+        return w.reduce((a, x) => a + x[key], 0) / w.length;
+    }).filter((r, i) => i % step == 0);
+    const labels = pts.map(r => r.index);
+    const opts = { animation: false, maintainAspectRatio: false, elements: { point: { radius: 0 } },
+                   scales: { x: { title: { display: true, text: 'File number' } } } };
+    new Chart(document.getElementById('total'), { type: 'line', data: { labels, datasets: [
+        { label: 'Total time (ms)', data: pts.map(r => r.total / 1000), borderWidth: 1 },
+        { label: 'Rolling avg, 100 files (ms)', data: rolling('total', 100).map(v => v / 1000), borderWidth: 2 } ] },
+        options: { ...opts, scales: { ...opts.scales, y: { title: { display: true, text: 'ms' } } } } });
+    new Chart(document.getElementById('perLine'), { type: 'line', data: { labels, datasets: [
+        { label: 'µs per line', data: pts.map(r => r.perLine), borderWidth: 1 },
+        { label: 'Rolling avg, 100 files (µs/line)', data: rolling('perLine', 100), borderWidth: 2 } ] },
+        options: { ...opts, scales: { ...opts.scales, y: { title: { display: true, text: 'µs / line' } } } } });
+});
+</script>\n`;
     page += '</BODY></HTML>';
     res.send(page);
 }
@@ -142,6 +236,7 @@ function processFile(filename, contents) {
         .then( (file) => cd.storeFile(file) )
         .then( (file) => Timer.endTimer(file, 'total') )
         .then( PASS( (file) => lastFile = file ))
+        .then( PASS( (file) => recordTimers(file) ))   // ADDED: save the timers of this file for /timers
         .then( PASS( (file) => maybePrintStatistics(file, cd, cloneStore) ))
     // TODO Store the timers from every file (or every 10th file), create a new landing page /timers
     // and display more in depth statistics there. Examples include:
