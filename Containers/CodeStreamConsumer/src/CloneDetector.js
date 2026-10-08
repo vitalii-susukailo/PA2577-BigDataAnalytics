@@ -92,6 +92,14 @@ class CloneDetector {
         // Return: file, including file.instances which is an array of Clone objects (or an empty array).
         //
 
+        // ADDED: for every chunk in the new file, find all equal chunks in compareFile
+        // and turn each matching pair into a Clone. flat() makes one list of the results.
+        let newInstances = file.chunks
+            .map( chunk => compareFile.chunks
+                  .filter( compareChunk => this.#chunkMatch(chunk, compareChunk) )
+                  .map( compareChunk => new Clone(file.name, compareFile.name, chunk, compareChunk) ))
+            .flat();
+
         file.instances = file.instances || [];        
         file.instances = file.instances.concat(newInstances);
         return file;
@@ -112,6 +120,14 @@ class CloneDetector {
         //         and not any of the Clones used during that expansion.
         //
 
+        // ADDED: go through the candidates in order. If a candidate continues a clone that is
+        // already in the accumulator, that clone is expanded; otherwise it becomes a new clone.
+        file.instances = (file.instances || []).reduce( (accumulator, clone) => {
+            if (!accumulator.some( existing => existing.maybeExpandWith(clone) )) {
+                accumulator.push(clone);
+            }
+            return accumulator;
+        }, []);
         return file;
     }
     
@@ -129,6 +145,17 @@ class CloneDetector {
         // Return: file, with file.instances containing unique Clone objects that may contain several targets
         //
 
+        // ADDED: clones with the same source lines that were found in different files are merged
+        // into one Clone. The other locations are added as extra targets.
+        file.instances = (file.instances || []).reduce( (accumulator, clone) => {
+            let existing = accumulator.find( c => c.equals(clone) );
+            if (existing) {
+                existing.addTarget(clone);
+            } else {
+                accumulator.push(clone);
+            }
+            return accumulator;
+        }, []);
         return file;
     }
     
@@ -170,11 +197,17 @@ class CloneDetector {
             //
             // 3. If the same clone is found in several places, consolidate them into one Clone.
             //
-            file = this.#filterCloneCandidates(file, f); 
-            file = this.#expandCloneCandidates(file);
-            file = this.#consolidateClones(file); 
+            // CHANGED: the original loop called all three methods on one shared file.instances.
+            // Candidates are now found and expanded per compared file, so that clones
+            // against different files are never expanded into each other.
+            // Consolidation is done only once, after the loop.
+            let pair = { name: file.name, chunks: file.chunks, instances: [] };
+            pair = this.#filterCloneCandidates(pair, f);
+            pair = this.#expandCloneCandidates(pair);
+            file.instances = file.instances.concat(pair.instances);
         }
 
+        file = this.#consolidateClones(file);   // CHANGED: moved out of the loop
         return file;
     }
 
